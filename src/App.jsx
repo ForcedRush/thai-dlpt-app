@@ -384,7 +384,7 @@ async function callClaude(systemPrompt, userMessage) {
       "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6"
+      model: "claude-sonnet-4-6",
       max_tokens: 2000,
       system: systemPrompt,
       messages: [
@@ -407,19 +407,6 @@ async function callClaude(systemPrompt, userMessage) {
     ?.filter((item) => item.type === "text")
     .map((item) => item.text)
     .join("") || "";
-}
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userMessage }],
-    }),
-  });
-  const data = await res.json();
-  return data.content?.map(b => b.text || "").join("") || "";
 }
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
