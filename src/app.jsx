@@ -369,10 +369,21 @@ const LISTENING_ITEMS = [
 
 // ─── API call ────────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "VITE_ANTHROPIC_API_KEY is not set. Add it in Vercel → Project Settings → Environment Variables, then redeploy."
+    );
+  }
+
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
