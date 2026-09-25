@@ -369,25 +369,12 @@ const LISTENING_ITEMS = [
 
 // ─── API call ────────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-
-  if (!apiKey) {
-    throw new Error(
-      "VITE_ANTHROPIC_API_KEY is not set. Add it in Vercel → Project Settings → Environment Variables, then redeploy."
-    );
-  }
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetch("/api/claude", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2000,
       system: systemPrompt,
       messages: [
         {
@@ -395,15 +382,16 @@ async function callClaude(systemPrompt, userMessage) {
           content: userMessage,
         },
       ],
+      max_tokens: 2000,
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
-  }
-
   const data = await response.json();
+
+  if (!response.ok) {
+    const detail = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
+    throw new Error(`API error ${response.status}: ${detail}`);
+  }
 
   return data.content
     ?.filter((item) => item.type === "text")
