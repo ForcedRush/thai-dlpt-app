@@ -368,7 +368,7 @@ const LISTENING_ITEMS = [
 ];
 
 // ─── API call ────────────────────────────────────────────────────────────────
-async function callClaude(systemPrompt, userMessage) {
+async function callClaude(systemPrompt, userMessage, { jsonMode = false } = {}) {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
@@ -378,6 +378,16 @@ async function callClaude(systemPrompt, userMessage) {
   }
 
   const model = "gemini-3.8-flash";
+  const generationConfig = {
+    // Thinking eats into maxOutputTokens before the visible answer is written,
+    // so keep it low and give plenty of headroom or long answers get cut off mid-string.
+    maxOutputTokens: 4096,
+    thinkingConfig: { thinkingLevel: "low" },
+  };
+  if (jsonMode) {
+    generationConfig.responseMimeType = "application/json";
+  }
+
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
     {
@@ -395,9 +405,7 @@ async function callClaude(systemPrompt, userMessage) {
             parts: [{ text: userMessage }],
           },
         ],
-        generationConfig: {
-          maxOutputTokens: 2000,
-        },
+        generationConfig,
       }),
     }
   );
@@ -412,6 +420,10 @@ async function callClaude(systemPrompt, userMessage) {
   const candidate = data.candidates?.[0];
   if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
     throw new Error("Gemini returned an unexpected response.");
+  }
+
+  if (candidate.finishReason === "MAX_TOKENS") {
+    throw new Error("Gemini response was cut off (hit the token limit). Try again.");
   }
 
   return candidate.content.parts
@@ -656,7 +668,8 @@ Return ONLY valid JSON, no markdown, no backticks. Schema:
   ]
 }
 Topic: ${chosenTopic}. Make questions test actual comprehension of the Thai text. All questions and answer choices must be in English.`,
-        "Generate the passage now."
+        "Generate the passage now.",
+        { jsonMode: true }
       );
       const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
       setPassage(parsed);
