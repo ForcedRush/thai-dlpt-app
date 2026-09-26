@@ -368,7 +368,7 @@ const LISTENING_ITEMS = [
 ];
 
 // ─── API call ────────────────────────────────────────────────────────────────
-async function callGemini(systemPrompt, userMessage, { jsonMode = false } = {}) {
+async function callClaude(systemPrompt, userMessage, { jsonMode = false } = {}) {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
@@ -377,8 +377,7 @@ async function callGemini(systemPrompt, userMessage, { jsonMode = false } = {}) 
     );
   }
 
-  // gemini-3.5-flash is the current generally-available Flash model.
-  const model = "gemini-3.5-flash";
+  const model = "gemini-3.8-flash";
   const generationConfig = {
     // Thinking eats into maxOutputTokens before the visible answer is written,
     // so keep it low and give plenty of headroom or long answers get cut off mid-string.
@@ -446,7 +445,7 @@ async function callGemini(systemPrompt, userMessage, { jsonMode = false } = {}) 
 
         if (quotaExhausted || (retrySeconds != null && retrySeconds > 10)) {
           throw new Error(
-            "You've hit Gemini's free-tier daily quota for this model. " +
+            "You've hit Gemini's free-tier daily quota for this model (20 requests/day). " +
               "It resets on its own, or you can enable billing on your Google AI Studio project " +
               "to raise the limit: https://ai.google.dev/gemini-api/docs/rate-limits"
           );
@@ -709,7 +708,7 @@ function Reading() {
     setLoading(true); setPassage(null); setAnswers({}); setSubmitted(false); setShowTranslation(false); setError("");
     const chosenTopic = topic || TOPICS[Math.floor(Math.random() * TOPICS.length)];
     try {
-      const raw = await callGemini(
+      const raw = await callClaude(
         `You are a Thai DLPT passage generator. Generate a Thai reading passage and comprehension questions at ILR level ${level}.
 Return ONLY valid JSON, no markdown, no backticks. Schema:
 {
@@ -1203,7 +1202,7 @@ function AiTutor() {
     setMessages(m => [...m, { role: "user", content: userMsg }]);
     setLoading(true);
     try {
-      const reply = await callGemini(
+      const reply = await callClaude(
         `You are an expert Thai language tutor specializing in helping students prepare for the Defense Language Proficiency Test (DLPT) in Thai. 
 You help with: Thai reading comprehension at ILR levels 1-3+, vocabulary, grammar, tone marks, script reading, and DLPT test strategies.
 When providing Thai text, also give romanized pronunciation and English translation.
