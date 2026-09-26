@@ -368,30 +368,32 @@ const LISTENING_ITEMS = [
 ];
 
 // ─── API call ────────────────────────────────────────────────────────────────
-async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
-  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
+async function callGemini(systemPrompt, userMessage, { jsonMode = false } = {}) {
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
     throw new Error(
-      "Groq API key is missing. In Vercel, add VITE_GROQ_API_KEY to the Production environment and redeploy."
+      "Gemini API key is missing. In Vercel, add VITE_GEMINI_API_KEY to the Production environment and redeploy."
     );
   }
 
-  // llama-3.3-70b-versatile is Enterprise-only now; openai/gpt-oss-20b is the
-  // current free/developer-tier production model. It's a reasoning model, so
-  // reasoning_format "hidden" keeps chain-of-thought out of message.content.
-  const model = "openai/gpt-oss-20b";
-  const url = "https://api.groq.com/openai/v1/chat/completions";
+  // gemini-3.5-flash is the current generally-available Flash model.
+  const model = "gemini-3.5-flash";
+  const generationConfig = {
+    // Thinking eats into maxOutputTokens before the visible answer is written,
+    // so keep it low and give plenty of headroom or long answers get cut off mid-string.
+    maxOutputTokens: 4096,
+    thinkingConfig: { thinkingLevel: "low" },
+  };
+  if (jsonMode) {
+    generationConfig.responseMimeType = "application/json";
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const body = JSON.stringify({
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
-    ],
-    max_tokens: 4096,
-    reasoning_effort: "low",
-    reasoning_format: "hidden",
-    ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: "user", parts: [{ text: userMessage }] }],
+    generationConfig,
   });
 
   // 503 (overloaded) and 429 (rate limited) are transient — retry with backoff
@@ -403,10 +405,7 @@ async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
     try {
       response = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body,
       });
     } catch (networkErr) {
@@ -420,26 +419,36 @@ async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      lastError = new Error(`Groq API error ${response.status}: ${errorText}`);
+      lastError = new Error(`Gemini API error ${response.status}: ${errorText}`);
 
       if (response.status === 429) {
         // Distinguish a genuine daily/quota exhaustion (retrying won't help for
         // a long time) from a short burst rate-limit (worth a quick retry).
+        let quotaExhausted = false;
         let retrySeconds = null;
         try {
           const parsed = JSON.parse(errorText);
-          const msg = parsed?.error?.message || "";
-          const match = /try again in ([\d.]+)s/i.exec(msg);
-          if (match) retrySeconds = parseFloat(match[1]);
+          const violations = parsed?.error?.details?.find(
+            (d) => d["@type"] === "type.googleapis.com/google.rpc.QuotaFailure"
+          )?.violations;
+          if (violations?.some((v) => /PerDay/i.test(v.quotaId || ""))) {
+            quotaExhausted = true;
+          }
+          const retryInfo = parsed?.error?.details?.find(
+            (d) => d["@type"] === "type.googleapis.com/google.rpc.RetryInfo"
+          );
+          if (retryInfo?.retryDelay) {
+            retrySeconds = parseFloat(retryInfo.retryDelay);
+          }
         } catch {
           // errorText wasn't JSON — fall through and treat as a normal 429
         }
 
-        if (retrySeconds != null && retrySeconds > 10) {
+        if (quotaExhausted || (retrySeconds != null && retrySeconds > 10)) {
           throw new Error(
-            "You've hit Groq's rate limit for this model. " +
-              "It resets on its own after a short wait, or you can check your limits at " +
-              "https://console.groq.com/settings/limits"
+            "You've hit Gemini's free-tier daily quota for this model. " +
+              "It resets on its own, or you can enable billing on your Google AI Studio project " +
+              "to raise the limit: https://ai.google.dev/gemini-api/docs/rate-limits"
           );
         }
       }
@@ -453,16 +462,16 @@ async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
 
     const data = await response.json();
 
-    const choice = data.choices?.[0];
-    if (!choice || !choice.message || typeof choice.message.content !== "string") {
-      throw new Error("Groq returned an unexpected response.");
+    const candidate = data.candidates?.[0];
+    if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
+      throw new Error("Gemini returned an unexpected response.");
     }
 
-    if (choice.finish_reason === "length") {
-      throw new Error("Groq response was cut off (hit the token limit). Try again.");
+    if (candidate.finishReason === "MAX_TOKENS") {
+      throw new Error("Gemini response was cut off (hit the token limit). Try again.");
     }
 
-    return choice.message.content;
+    return candidate.content.parts.map((part) => part.text || "").join("");
   }
 
   throw lastError;
@@ -700,7 +709,7 @@ function Reading() {
     setLoading(true); setPassage(null); setAnswers({}); setSubmitted(false); setShowTranslation(false); setError("");
     const chosenTopic = topic || TOPICS[Math.floor(Math.random() * TOPICS.length)];
     try {
-      const raw = await callGroq(
+      const raw = await callGemini(
         `You are a Thai DLPT passage generator. Generate a Thai reading passage and comprehension questions at ILR level ${level}.
 Return ONLY valid JSON, no markdown, no backticks. Schema:
 {
@@ -1194,7 +1203,7 @@ function AiTutor() {
     setMessages(m => [...m, { role: "user", content: userMsg }]);
     setLoading(true);
     try {
-      const reply = await callGroq(
+      const reply = await callGemini(
         `You are an expert Thai language tutor specializing in helping students prepare for the Defense Language Proficiency Test (DLPT) in Thai. 
 You help with: Thai reading comprehension at ILR levels 1-3+, vocabulary, grammar, tone marks, script reading, and DLPT test strategies.
 When providing Thai text, also give romanized pronunciation and English translation.
