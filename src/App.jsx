@@ -368,38 +368,109 @@ const LISTENING_ITEMS = [
 ];
 
 // ─── API call ────────────────────────────────────────────────────────────────
-async function callAI(systemPrompt, userMessage) {
+async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
   const apiKey = import.meta.env.VITE_GROQ_API_KEY;
 
   if (!apiKey) {
-    throw new Error("Groq API key is not configured.");
+    throw new Error(
+      "Groq API key is missing. In Vercel, add VITE_GROQ_API_KEY to the Production environment and redeploy."
+    );
   }
 
-  const response = await fetch(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-oss-120b",
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userMessage },
-        ],
-      }),
+  const model = "llama-3.3-70b-versatile";
+  const url = "https://api.groq.com/openai/v1/chat/completions";
+  const body = JSON.stringify({
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userMessage },
+    ],
+    max_tokens: 4096,
+    ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
+  });
+
+  // 503 (overloaded) and 429 (rate limited) are transient — retry with backoff
+  // before giving up, so a brief demand spike doesn't surface as a user-facing error.
+  const MAX_ATTEMPTS = 4;
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body,
+      });
+    } catch (networkErr) {
+      lastError = networkErr;
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastError;
     }
-  );
 
-  if (!response.ok) {
-    throw new Error(`Groq API error: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      lastError = new Error(`Groq API error ${response.status}: ${errorText}`);
+
+      if (response.status === 429) {
+        // Distinguish a genuine daily/quota exhaustion (retrying won't help for
+        // a long time) from a short burst rate-limit (worth a quick retry).
+        let retrySeconds = null;
+        try {
+          const parsed = JSON.parse(errorText);
+          const msg = parsed?.error?.message || "";
+          const match = /try again in ([\d.]+)s/i.exec(msg);
+          if (match) retrySeconds = parseFloat(match[1]);
+        } catch {
+          // errorText wasn't JSON — fall through and treat as a normal 429
+        }
+
+        if (retrySeconds != null && retrySeconds > 10) {
+          throw new Error(
+            "You've hit Groq's rate limit for this model. " +
+              "It resets on its own after a short wait, or you can check your limits at " +
+              "https://console.groq.com/settings/limits"
+          );
+        }
+      }
+
+      if ((response.status === 503 || response.status === 429) && attempt < MAX_ATTEMPTS) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastError;
+    }
+
+    const data = await response.json();
+
+    const choice = data.choices?.[0];
+    if (!choice || !choice.message || typeof choice.message.content !== "string") {
+      throw new Error("Groq returned an unexpected response.");
+    }
+
+    if (choice.finish_reason === "length") {
+      throw new Error("Groq response was cut off (hit the token limit). Try again.");
+    }
+
+    return choice.message.content;
   }
 
-  const data = await response.json();
+  throw lastError;
+}
 
-  return data.choices[0].message.content;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function backoffMs(attempt) {
+  // Exponential backoff with jitter: ~600ms, ~1.2s, ~2.4s
+  const base = 600 * 2 ** (attempt - 1);
+  return base + Math.random() * 300;
 }
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
@@ -624,7 +695,7 @@ function Reading() {
     setLoading(true); setPassage(null); setAnswers({}); setSubmitted(false); setShowTranslation(false); setError("");
     const chosenTopic = topic || TOPICS[Math.floor(Math.random() * TOPICS.length)];
     try {
-      const raw = await callClaude(
+      const raw = await callGroq(
         `You are a Thai DLPT passage generator. Generate a Thai reading passage and comprehension questions at ILR level ${level}.
 Return ONLY valid JSON, no markdown, no backticks. Schema:
 {
@@ -1118,7 +1189,7 @@ function AiTutor() {
     setMessages(m => [...m, { role: "user", content: userMsg }]);
     setLoading(true);
     try {
-      const reply = await callClaude(
+      const reply = await callGroq(
         `You are an expert Thai language tutor specializing in helping students prepare for the Defense Language Proficiency Test (DLPT) in Thai. 
 You help with: Thai reading comprehension at ILR levels 1-3+, vocabulary, grammar, tone marks, script reading, and DLPT test strategies.
 When providing Thai text, also give romanized pronunciation and English translation.
