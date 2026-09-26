@@ -369,49 +369,53 @@ const LISTENING_ITEMS = [
 
 // ─── API call ────────────────────────────────────────────────────────────────
 async function callClaude(systemPrompt, userMessage) {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
 
   if (!apiKey) {
     throw new Error(
-      "Anthropic API key is missing. In Vercel, add VITE_ANTHROPIC_API_KEY to the Production environment and redeploy."
+      "Gemini API key is missing. In Vercel, add VITE_GEMINI_API_KEY to the Production environment and redeploy."
     );
   }
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2000,
-      system: systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: userMessage,
+  const model = "gemini-2.5-flash";
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemPrompt }],
         },
-      ],
-    }),
-  });
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: userMessage }],
+          },
+        ],
+        generationConfig: {
+          maxOutputTokens: 2000,
+        },
+      }),
+    }
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
+    throw new Error(`Gemini API error ${response.status}: ${errorText}`);
   }
 
   const data = await response.json();
 
-  if (!data.content || !Array.isArray(data.content)) {
-    throw new Error("Anthropic returned an unexpected response.");
+  const candidate = data.candidates?.[0];
+  if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
+    throw new Error("Gemini returned an unexpected response.");
   }
 
-  return data.content
-    .filter((item) => item.type === "text")
-    .map((item) => item.text || "")
+  return candidate.content.parts
+    .map((part) => part.text || "")
     .join("");
 }
 
