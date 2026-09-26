@@ -377,7 +377,10 @@ async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
     );
   }
 
-  const model = "llama-3.3-70b-versatile";
+  // llama-3.3-70b-versatile is Enterprise-only now; openai/gpt-oss-20b is the
+  // current free/developer-tier production model. It's a reasoning model, so
+  // reasoning_format "hidden" keeps chain-of-thought out of message.content.
+  const model = "openai/gpt-oss-20b";
   const url = "https://api.groq.com/openai/v1/chat/completions";
   const body = JSON.stringify({
     model,
@@ -386,6 +389,8 @@ async function callGroq(systemPrompt, userMessage, { jsonMode = false } = {}) {
       { role: "user", content: userMessage },
     ],
     max_tokens: 4096,
+    reasoning_effort: "low",
+    reasoning_format: "hidden",
     ...(jsonMode ? { response_format: { type: "json_object" } } : {}),
   });
 
