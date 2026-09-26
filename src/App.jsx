@@ -388,47 +388,69 @@ async function callClaude(systemPrompt, userMessage, { jsonMode = false } = {}) 
     generationConfig.responseMimeType = "application/json";
   }
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemPrompt }],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: userMessage }],
-          },
-        ],
-        generationConfig,
-      }),
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: "user", parts: [{ text: userMessage }] }],
+    generationConfig,
+  });
+
+  // 503 (overloaded) and 429 (rate limited) are transient — retry with backoff
+  // before giving up, so a brief demand spike doesn't surface as a user-facing error.
+  const MAX_ATTEMPTS = 4;
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+    } catch (networkErr) {
+      lastError = networkErr;
+      if (attempt < MAX_ATTEMPTS) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastError;
     }
-  );
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Gemini API error ${response.status}: ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      lastError = new Error(`Gemini API error ${response.status}: ${errorText}`);
+      if ((response.status === 503 || response.status === 429) && attempt < MAX_ATTEMPTS) {
+        await sleep(backoffMs(attempt));
+        continue;
+      }
+      throw lastError;
+    }
+
+    const data = await response.json();
+
+    const candidate = data.candidates?.[0];
+    if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
+      throw new Error("Gemini returned an unexpected response.");
+    }
+
+    if (candidate.finishReason === "MAX_TOKENS") {
+      throw new Error("Gemini response was cut off (hit the token limit). Try again.");
+    }
+
+    return candidate.content.parts.map((part) => part.text || "").join("");
   }
 
-  const data = await response.json();
+  throw lastError;
+}
 
-  const candidate = data.candidates?.[0];
-  if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
-    throw new Error("Gemini returned an unexpected response.");
-  }
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  if (candidate.finishReason === "MAX_TOKENS") {
-    throw new Error("Gemini response was cut off (hit the token limit). Try again.");
-  }
-
-  return candidate.content.parts
-    .map((part) => part.text || "")
-    .join("");
+function backoffMs(attempt) {
+  // Exponential backoff with jitter: ~600ms, ~1.2s, ~2.4s
+  const base = 600 * 2 ** (attempt - 1);
+  return base + Math.random() * 300;
 }
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
