@@ -368,122 +368,38 @@ const LISTENING_ITEMS = [
 ];
 
 // ─── API call ────────────────────────────────────────────────────────────────
-async function callClaude(systemPrompt, userMessage, { jsonMode = false } = {}) {
-  const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+async function callAI(systemPrompt, userMessage) {
+  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
 
   if (!apiKey) {
-    throw new Error(
-      "Gemini API key is missing. In Vercel, add VITE_GEMINI_API_KEY to the Production environment and redeploy."
-    );
+    throw new Error("Groq API key is not configured.");
   }
 
-  const model = "gemini-3.8-flash";
-  const generationConfig = {
-    // Thinking eats into maxOutputTokens before the visible answer is written,
-    // so keep it low and give plenty of headroom or long answers get cut off mid-string.
-    maxOutputTokens: 4096,
-    thinkingConfig: { thinkingLevel: "low" },
-  };
-  if (jsonMode) {
-    generationConfig.responseMimeType = "application/json";
+  const response = await fetch(
+    "https://api.groq.com/openai/v1/chat/completions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-120b",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userMessage },
+        ],
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Groq API error: ${response.status}`);
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const body = JSON.stringify({
-    systemInstruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: "user", parts: [{ text: userMessage }] }],
-    generationConfig,
-  });
+  const data = await response.json();
 
-  // 503 (overloaded) and 429 (rate limited) are transient — retry with backoff
-  // before giving up, so a brief demand spike doesn't surface as a user-facing error.
-  const MAX_ATTEMPTS = 4;
-  let lastError;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    let response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      });
-    } catch (networkErr) {
-      lastError = networkErr;
-      if (attempt < MAX_ATTEMPTS) {
-        await sleep(backoffMs(attempt));
-        continue;
-      }
-      throw lastError;
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      lastError = new Error(`Gemini API error ${response.status}: ${errorText}`);
-
-      if (response.status === 429) {
-        // Distinguish a genuine daily/quota exhaustion (retrying won't help for
-        // a long time) from a short burst rate-limit (worth a quick retry).
-        let quotaExhausted = false;
-        let retrySeconds = null;
-        try {
-          const parsed = JSON.parse(errorText);
-          const violations = parsed?.error?.details?.find(
-            (d) => d["@type"] === "type.googleapis.com/google.rpc.QuotaFailure"
-          )?.violations;
-          if (violations?.some((v) => /PerDay/i.test(v.quotaId || ""))) {
-            quotaExhausted = true;
-          }
-          const retryInfo = parsed?.error?.details?.find(
-            (d) => d["@type"] === "type.googleapis.com/google.rpc.RetryInfo"
-          );
-          if (retryInfo?.retryDelay) {
-            retrySeconds = parseFloat(retryInfo.retryDelay);
-          }
-        } catch {
-          // errorText wasn't JSON — fall through and treat as a normal 429
-        }
-
-        if (quotaExhausted || (retrySeconds != null && retrySeconds > 10)) {
-          throw new Error(
-            "You've hit Gemini's free-tier daily quota for this model (20 requests/day). " +
-              "It resets on its own, or you can enable billing on your Google AI Studio project " +
-              "to raise the limit: https://ai.google.dev/gemini-api/docs/rate-limits"
-          );
-        }
-      }
-
-      if ((response.status === 503 || response.status === 429) && attempt < MAX_ATTEMPTS) {
-        await sleep(backoffMs(attempt));
-        continue;
-      }
-      throw lastError;
-    }
-
-    const data = await response.json();
-
-    const candidate = data.candidates?.[0];
-    if (!candidate || !candidate.content || !Array.isArray(candidate.content.parts)) {
-      throw new Error("Gemini returned an unexpected response.");
-    }
-
-    if (candidate.finishReason === "MAX_TOKENS") {
-      throw new Error("Gemini response was cut off (hit the token limit). Try again.");
-    }
-
-    return candidate.content.parts.map((part) => part.text || "").join("");
-  }
-
-  throw lastError;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function backoffMs(attempt) {
-  // Exponential backoff with jitter: ~600ms, ~1.2s, ~2.4s
-  const base = 600 * 2 ** (attempt - 1);
-  return base + Math.random() * 300;
+  return data.choices[0].message.content;
 }
 
 // ─── Shared UI ───────────────────────────────────────────────────────────────
