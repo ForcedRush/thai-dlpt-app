@@ -419,6 +419,39 @@ async function callClaude(systemPrompt, userMessage, { jsonMode = false } = {}) 
     if (!response.ok) {
       const errorText = await response.text();
       lastError = new Error(`Gemini API error ${response.status}: ${errorText}`);
+
+      if (response.status === 429) {
+        // Distinguish a genuine daily/quota exhaustion (retrying won't help for
+        // a long time) from a short burst rate-limit (worth a quick retry).
+        let quotaExhausted = false;
+        let retrySeconds = null;
+        try {
+          const parsed = JSON.parse(errorText);
+          const violations = parsed?.error?.details?.find(
+            (d) => d["@type"] === "type.googleapis.com/google.rpc.QuotaFailure"
+          )?.violations;
+          if (violations?.some((v) => /PerDay/i.test(v.quotaId || ""))) {
+            quotaExhausted = true;
+          }
+          const retryInfo = parsed?.error?.details?.find(
+            (d) => d["@type"] === "type.googleapis.com/google.rpc.RetryInfo"
+          );
+          if (retryInfo?.retryDelay) {
+            retrySeconds = parseFloat(retryInfo.retryDelay);
+          }
+        } catch {
+          // errorText wasn't JSON — fall through and treat as a normal 429
+        }
+
+        if (quotaExhausted || (retrySeconds != null && retrySeconds > 10)) {
+          throw new Error(
+            "You've hit Gemini's free-tier daily quota for this model (20 requests/day). " +
+              "It resets on its own, or you can enable billing on your Google AI Studio project " +
+              "to raise the limit: https://ai.google.dev/gemini-api/docs/rate-limits"
+          );
+        }
+      }
+
       if ((response.status === 503 || response.status === 429) && attempt < MAX_ATTEMPTS) {
         await sleep(backoffMs(attempt));
         continue;
@@ -1177,8 +1210,9 @@ Be encouraging, clear, and pedagogically effective. Keep responses concise but h
         userMsg
       );
       setMessages(m => [...m, { role: "assistant", content: reply }]);
-    } catch {
-      setMessages(m => [...m, { role: "assistant", content: "Sorry, I had trouble connecting. Please try again." }]);
+    } catch (e) {
+      const fallback = "Sorry, I had trouble connecting. Please try again.";
+      setMessages(m => [...m, { role: "assistant", content: e?.message || fallback }]);
     }
     setLoading(false);
   }
